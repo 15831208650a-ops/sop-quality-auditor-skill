@@ -129,6 +129,7 @@ def find_comments(text: str) -> list[dict[str, object]]:
 def strip_markdown(line: str) -> str:
     line = re.sub(r"`[^`]*`", "", line)
     line = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", line)
+    line = re.sub(r"https?://\S+", "", line)
     line = re.sub(r"[*_#>|-]", "", line)
     return re.sub(r"\s+", "", line)
 
@@ -142,7 +143,7 @@ def sentence_candidates(text: str) -> list[dict[str, object]]:
             continue
         for sentence in re.split(r"(?<=[。！？!?；;])", line):
             clean = strip_markdown(sentence)
-            if len(clean) >= 90 or (len(clean) >= 70 and LONG_CONNECTOR_RE.search(clean)):
+            if len(clean) > 100 and (LONG_CONNECTOR_RE.search(clean) or len(clean) > 120):
                 candidates.append(
                     {
                         "line": idx,
