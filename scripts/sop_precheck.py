@@ -49,6 +49,9 @@ ACTION_RE = re.compile(
 EVIDENCE_RE = re.compile(r"留痕|截图|记录|保存|归档|底稿|证据|复核|签字|审批")
 LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s*|[①②③④⑤⑥⑦⑧⑨⑩])")
 PUNCT_RE = re.compile(r"[，,；;、（）()]")
+ALPHA_ITEM_RE = re.compile(r"^\s*[a-zA-Z][.)、]\s*")
+CIRCLED_ITEM_RE = re.compile(r"^\s*[①②③④⑤⑥⑦⑧⑨⑩]")
+PLACEHOLDER_RE = re.compile(r"^\s*(?:|[-/]|N/?A|NA|TBD|待补充|同上)\s*$", re.I)
 
 
 @dataclass
@@ -219,16 +222,139 @@ def table_after_heading(lines: list[str], heading_line: int) -> bool:
     return any(line.strip().startswith("|") and line.count("|") >= 2 for line in window)
 
 
+def table_lines_after_heading(lines: list[str], heading_line: int) -> list[str]:
+    window = lines[heading_line : min(len(lines), heading_line + 40)]
+    table_lines = []
+    started = False
+    for line in window:
+        if line.strip().startswith("|") and line.count("|") >= 2:
+            table_lines.append(line)
+            started = True
+            continue
+        if started:
+            break
+        if line.strip():
+            continue
+    return table_lines
+
+
+def split_table_row(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def is_separator_row(cells: list[str]) -> bool:
+    return all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells if cell.strip())
+
+
+def is_filled(cell: str) -> bool:
+    return not PLACEHOLDER_RE.fullmatch(cell.strip())
+
+
+def gaap_table_content_check(lines: list[str], heading_line: int) -> dict[str, object]:
+    table_lines = table_lines_after_heading(lines, heading_line)
+    if not table_lines:
+        return {"valid_data_rows": 0, "issue": "未发现Markdown表格"}
+
+    rows = [split_table_row(line) for line in table_lines]
+    header = next((row for row in rows if not is_separator_row(row)), [])
+    data_rows = [row for row in rows[1:] if not is_separator_row(row)]
+    normalized = [re.sub(r"\s+", "", cell).lower() for cell in header]
+    core_indexes = {}
+    for expected in ("分类", "差异项", "prc", "hkfrs"):
+        try:
+            core_indexes[expected] = normalized.index(expected)
+        except ValueError:
+            core_indexes[expected] = None
+
+    missing_columns = [name for name, index in core_indexes.items() if index is None]
+    valid_data_rows = 0
+    for row in data_rows:
+        filled_core = 0
+        for name in ("差异项", "prc", "hkfrs"):
+            index = core_indexes[name]
+            if index is not None and index < len(row) and is_filled(row[index]):
+                filled_core += 1
+        if filled_core >= 2:
+            valid_data_rows += 1
+
+    issue = ""
+    if missing_columns:
+        issue = "缺少核心列：" + "、".join(missing_columns)
+    elif not data_rows:
+        issue = "只有表头和分隔行"
+    elif valid_data_rows == 0:
+        issue = "无有效差异内容行"
+    return {
+        "valid_data_rows": valid_data_rows,
+        "data_rows": len(data_rows),
+        "missing_columns": missing_columns,
+        "issue": issue,
+    }
+
+
 def table_checks(text: str, headings: list[Heading]) -> dict[str, object]:
     lines = text.splitlines()
     result = {}
     for module in ("GAAP Difference", "Review Checklist", "常用网站"):
         module_headings = [h for h in headings if h.title == module or h.title.endswith(module)]
-        result[module] = [
-            {"line": h.line, "has_nearby_table": table_after_heading(lines, h.line)}
-            for h in module_headings
-        ]
+        checks = []
+        for h in module_headings:
+            item = {"line": h.line, "has_nearby_table": table_after_heading(lines, h.line)}
+            if module == "GAAP Difference":
+                item.update(gaap_table_content_check(lines, h.line))
+            checks.append(item)
+        result[module] = checks
     return result
+
+
+def hierarchy_inversion_candidates(text: str) -> list[dict[str, object]]:
+    issues = []
+    lines = text.splitlines()
+    current_h2 = ""
+    current_h4 = ""
+    current_h5 = ""
+    for idx, line in enumerate(lines, 1):
+        heading = HEADING_RE.match(line)
+        if heading:
+            level = len(heading.group(1))
+            title = heading.group(2).strip()
+            if level == 2:
+                current_h2 = title
+                current_h4 = ""
+                current_h5 = ""
+            elif level == 4:
+                current_h4 = title
+                current_h5 = ""
+            elif level == 5:
+                current_h5 = title
+            continue
+        if current_h4 not in ("基础操作指引", "进阶实操提示"):
+            continue
+        if not ALPHA_ITEM_RE.match(line):
+            continue
+        alpha_indent = len(line) - len(line.lstrip())
+        for next_idx in range(idx, min(len(lines), idx + 8)):
+            next_line = lines[next_idx]
+            if not next_line.strip():
+                continue
+            if HEADING_RE.match(next_line) or ALPHA_ITEM_RE.match(next_line):
+                break
+            if CIRCLED_ITEM_RE.match(next_line):
+                circled_indent = len(next_line) - len(next_line.lstrip())
+                if circled_indent > alpha_indent or line.rstrip().endswith(("：", ":")):
+                    issues.append(
+                        {
+                            "line": idx,
+                            "child_line": next_idx + 1,
+                            "context": " -> ".join(
+                                part for part in (current_h2, current_h4, current_h5) if part
+                            ),
+                            "parent_excerpt": line.strip()[:100],
+                            "child_excerpt": next_line.strip()[:100],
+                        }
+                    )
+                break
+    return issues[:100]
 
 
 def build_report(path: Path) -> dict[str, object]:
@@ -265,6 +391,7 @@ def build_report(path: Path) -> dict[str, object]:
         "psp_missing_core_modules": psp_missing,
         "comments_or_draft_marks": find_comments(text),
         "long_sentence_candidates": sentence_candidates(text),
+        "hierarchy_inversion_candidates": hierarchy_inversion_candidates(text),
         "table_checks": table_checks(text, headings),
     }
 
@@ -328,16 +455,35 @@ def print_markdown(report: dict[str, object]) -> None:
                 f"{item['length']} | {reasons} | {excerpt} |"
             )
     print()
+    print("## 编号层级倒挂候选")
+    print()
+    hierarchy_issues = report["hierarchy_inversion_candidates"]
+    if not hierarchy_issues:
+        print("未发现明显编号层级倒挂候选。")
+    else:
+        print("| 父项行号 | 子项行号 | 上下文 | 父项摘录 | 子项摘录 |")
+        print("|----------|----------|--------|----------|----------|")
+        for item in hierarchy_issues[:30]:
+            context = str(item["context"]).replace("|", "\\|")
+            parent = str(item["parent_excerpt"]).replace("|", "\\|")
+            child = str(item["child_excerpt"]).replace("|", "\\|")
+            print(f"| {item['line']} | {item['child_line']} | {context} | {parent} | {child} |")
+    print()
     print("## 表格检查")
     print()
-    print("| 模块 | 行号 | 附近是否有表格 |")
-    print("|------|------|----------------|")
+    print("| 模块 | 行号 | 附近是否有表格 | GAAP有效数据行 | GAAP问题 |")
+    print("|------|------|----------------|----------------|----------|")
     for module, checks in report["table_checks"].items():
         if not checks:
-            print(f"| {module} | 缺失 | 否 |")
+            print(f"| {module} | 缺失 | 否 | - | - |")
             continue
         for item in checks:
-            print(f"| {module} | {item['line']} | {'是' if item['has_nearby_table'] else '否'} |")
+            valid_rows = item.get("valid_data_rows", "-")
+            issue = str(item.get("issue", "-") or "-").replace("|", "\\|")
+            print(
+                f"| {module} | {item['line']} | "
+                f"{'是' if item['has_nearby_table'] else '否'} | {valid_rows} | {issue} |"
+            )
 
 
 def main() -> int:
