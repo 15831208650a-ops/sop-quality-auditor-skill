@@ -39,7 +39,16 @@ COMMENT_PATTERNS = [
     ("代码注释", re.compile(r"^\s*//|/\*|\*/", re.M)),
     ("草稿标记", re.compile(r"TODO|FIXME|待补充|审核中", re.I)),
 ]
-LONG_CONNECTOR_RE = re.compile(r"且|并|同时|另外|此外|同步|以及")
+LONG_CONNECTOR_RE = re.compile(r"且|并|同时|另外|此外|同步|以及|并且|然后|再")
+CONDITION_RE = re.compile(r"若|如|如果|当|对于|针对|在.+?时")
+JUDGMENT_RE = re.compile(r"判断|确认|核对|检查|识别|评估|比较|分析|复核")
+ACTION_RE = re.compile(
+    r"获取|打开|进入|登录|下载|上传|导出|填写|录入|选择|点击|保存|提交|"
+    r"检查|核对|确认|判断|比较|计算|分析|生成|编制|复核|记录|留存|归档"
+)
+EVIDENCE_RE = re.compile(r"留痕|截图|记录|保存|归档|底稿|证据|复核|签字|审批")
+LIST_ITEM_RE = re.compile(r"^\s*(?:[-*+]\s+|\d+[.)、]\s*|[①②③④⑤⑥⑦⑧⑨⑩])")
+PUNCT_RE = re.compile(r"[，,；;、（）()]")
 
 
 @dataclass
@@ -136,19 +145,69 @@ def strip_markdown(line: str) -> str:
 
 def sentence_candidates(text: str) -> list[dict[str, object]]:
     candidates = []
+    current_h2 = ""
+    current_h4 = ""
+    current_h5 = ""
     for idx, line in enumerate(text.splitlines(), 1):
+        heading = HEADING_RE.match(line)
+        if heading:
+            level = len(heading.group(1))
+            title = heading.group(2).strip()
+            if level == 2:
+                current_h2 = title
+                current_h4 = ""
+                current_h5 = ""
+            elif level == 4:
+                current_h4 = title
+                current_h5 = ""
+            elif level == 5:
+                current_h5 = title
+            continue
         if not line.strip() or line.lstrip().startswith("|"):
             continue
-        if HEADING_RE.match(line):
+        if current_h4 not in ("基础操作指引", "进阶实操提示"):
             continue
+        threshold = 80 if current_h4 == "基础操作指引" else 90
+        severe_threshold = 120 if current_h4 == "基础操作指引" else 130
+        ultra_threshold = 180 if current_h4 == "基础操作指引" else None
         for sentence in re.split(r"(?<=[。！？!?；;])", line):
             clean = strip_markdown(sentence)
-            if len(clean) > 100 and (LONG_CONNECTOR_RE.search(clean) or len(clean) > 120):
+            if len(clean) <= threshold:
+                continue
+            reasons = []
+            connector = bool(LONG_CONNECTOR_RE.search(clean))
+            punct_count = len(PUNCT_RE.findall(clean))
+            action_count = len(ACTION_RE.findall(clean))
+            element_count = sum(
+                1
+                for pattern in (CONDITION_RE, JUDGMENT_RE, ACTION_RE, EVIDENCE_RE)
+                if pattern.search(clean)
+            )
+            if connector and action_count >= 2:
+                reasons.append("连接词串联多个动作")
+            if action_count >= 3:
+                reasons.append("包含三个以上操作/检查动作")
+            if element_count >= 3:
+                reasons.append("条件/判断/操作/留痕要素过多")
+            if punct_count >= 4:
+                reasons.append("多个标点分隔操作点")
+            if LIST_ITEM_RE.match(line) and (action_count >= 2 or punct_count >= 2):
+                reasons.append("单个列表项承载多个步骤")
+            if len(clean) > severe_threshold and (connector or action_count >= 2 or punct_count >= 2):
+                reasons.append("超过严重长句阈值")
+            if ultra_threshold and len(clean) > ultra_threshold:
+                reasons.append("超过超长句阈值")
+            if reasons:
                 candidates.append(
                     {
                         "line": idx,
+                        "module": current_h4,
+                        "context": " -> ".join(
+                            part for part in (current_h2, current_h4, current_h5) if part
+                        ),
                         "length": len(clean),
-                        "has_connector": bool(LONG_CONNECTOR_RE.search(clean)),
+                        "has_connector": connector,
+                        "reasons": reasons,
                         "excerpt": sentence.strip()[:120],
                     }
                 )
@@ -251,18 +310,23 @@ def print_markdown(report: dict[str, object]) -> None:
         for item in comments[:50]:
             print(f"| {item['type']} | {item['line']} | `{item['excerpt']}` |")
     print()
-    print("## 长句候选")
+    print("## 需拆分长句候选")
     print()
     candidates = report["long_sentence_candidates"]
     if not candidates:
-        print("未发现明显长句候选。")
+        print("未发现明显需拆分长句候选。")
     else:
-        print("| 行号 | 长度 | 含连接词 | 摘录 |")
-        print("|------|------|----------|------|")
+        print("| 行号 | 模块 | 上下文 | 长度 | 触发原因 | 摘录 |")
+        print("|------|------|--------|------|----------|------|")
         for item in candidates[:30]:
-            connector = "是" if item["has_connector"] else "否"
+            module = str(item.get("module", "")).replace("|", "\\|")
+            context = str(item.get("context", "")).replace("|", "\\|")
+            reasons = "；".join(str(x) for x in item.get("reasons", [])).replace("|", "\\|")
             excerpt = str(item["excerpt"]).replace("|", "\\|")
-            print(f"| {item['line']} | {item['length']} | {connector} | {excerpt} |")
+            print(
+                f"| {item['line']} | {module} | {context} | "
+                f"{item['length']} | {reasons} | {excerpt} |"
+            )
     print()
     print("## 表格检查")
     print()
