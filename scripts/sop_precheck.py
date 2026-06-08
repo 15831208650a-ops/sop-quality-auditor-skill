@@ -52,6 +52,7 @@ PUNCT_RE = re.compile(r"[，,；;、（）()]")
 ALPHA_ITEM_RE = re.compile(r"^\s*[a-zA-Z][.)、]\s*")
 CIRCLED_ITEM_RE = re.compile(r"^\s*[①②③④⑤⑥⑦⑧⑨⑩]")
 PLACEHOLDER_RE = re.compile(r"^\s*(?:|[-/]|N/?A|NA|TBD|待补充|同上)\s*$", re.I)
+NUMBERED_TASK_TITLE_RE = re.compile(r"^\d+[.、]\s*")
 
 
 @dataclass
@@ -357,6 +358,39 @@ def hierarchy_inversion_candidates(text: str) -> list[dict[str, object]]:
     return issues[:100]
 
 
+def heading_level_issues(headings: list[Heading]) -> list[dict[str, object]]:
+    issues = []
+    current_h2 = ""
+    current_h4 = ""
+    current_h5 = ""
+    for h in headings:
+        if h.level == 2:
+            current_h2 = h.title
+            current_h4 = ""
+            current_h5 = ""
+            continue
+        if h.level == 4:
+            current_h4 = h.title
+            current_h5 = ""
+            continue
+        if h.level == 5:
+            current_h5 = h.title
+            continue
+        if h.level == 6 and current_h4 in ("基础操作指引", "进阶实操提示"):
+            if NUMBERED_TASK_TITLE_RE.match(h.title):
+                issues.append(
+                    {
+                        "line": h.line,
+                        "context": " -> ".join(
+                            part for part in (current_h2, current_h4, current_h5) if part
+                        ),
+                        "heading": h.title,
+                        "issue": "六级标题承载具体任务，应改为五级任务标题或正文列表项",
+                    }
+                )
+    return issues[:100]
+
+
 def build_report(path: Path) -> dict[str, object]:
     text, encoding = read_text(path)
     headings = iter_headings(text)
@@ -392,6 +426,7 @@ def build_report(path: Path) -> dict[str, object]:
         "comments_or_draft_marks": find_comments(text),
         "long_sentence_candidates": sentence_candidates(text),
         "hierarchy_inversion_candidates": hierarchy_inversion_candidates(text),
+        "heading_level_issues": heading_level_issues(headings),
         "table_checks": table_checks(text, headings),
     }
 
@@ -468,6 +503,20 @@ def print_markdown(report: dict[str, object]) -> None:
             parent = str(item["parent_excerpt"]).replace("|", "\\|")
             child = str(item["child_excerpt"]).replace("|", "\\|")
             print(f"| {item['line']} | {item['child_line']} | {context} | {parent} | {child} |")
+    print()
+    print("## 标题层级问题候选")
+    print()
+    heading_issues = report["heading_level_issues"]
+    if not heading_issues:
+        print("未发现明显标题层级问题候选。")
+    else:
+        print("| 行号 | 上下文 | 标题 | 问题 |")
+        print("|------|--------|------|------|")
+        for item in heading_issues[:30]:
+            context = str(item["context"]).replace("|", "\\|")
+            heading = str(item["heading"]).replace("|", "\\|")
+            issue = str(item["issue"]).replace("|", "\\|")
+            print(f"| {item['line']} | {context} | {heading} | {issue} |")
     print()
     print("## 表格检查")
     print()
