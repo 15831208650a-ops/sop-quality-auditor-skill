@@ -14,6 +14,7 @@ description: 零码平台专用的审计底稿SOP质量审核Skill；按referenc
 - 不得使用模型常识、自行补充规则或旧版规则覆盖 `references/scoring_rules.md`。
 - 如果本文件与 `references/scoring_rules.md` 不一致，以 `references/scoring_rules.md` 为准。
 - 打分前必须读取 `references/scoring_rules.md`，不得只看本文件摘要。
+- 零码支持脚本执行时，必须先运行 `scripts/sop_precheck.py`，再进行AI分块审核和报告生成。
 
 ## 执行流程
 
@@ -40,7 +41,15 @@ references/scoring_rules.md
 
 ### 2. 结构扫描
 
-在输出最终得分前，必须先完成结构扫描，至少识别：
+在输出最终得分前，必须先完成结构扫描。零码环境支持脚本时，结构扫描必须先由脚本完成：
+
+```bash
+python scripts/sop_precheck.py path/to/SOP.md --format markdown
+```
+
+脚本输出作为结构扫描依据，AI不得重复从零统计脚本已完成的机械检查；AI应直接基于脚本输出进入规则判断、扣分确认和整改建议。
+
+脚本主要识别：
 
 - SOP标题。
 - 所有二级标题。
@@ -54,13 +63,9 @@ references/scoring_rules.md
 - Review Checklist覆盖情况。
 - 需拆分长句候选。
 
-如果零码环境允许运行脚本，可先运行：
+脚本只做结构预检、0容忍候选识别和报告骨架生成，不代替最终评分。最终得分必须基于 `references/scoring_rules.md` 分块审核后汇总。
 
-```bash
-python scripts/sop_precheck.py path/to/SOP.md --format markdown
-```
-
-脚本只做结构预检，不代替最终评分。最终得分必须基于 `references/scoring_rules.md` 分块审核后汇总。
+如果脚本运行失败，必须在报告中说明失败原因，并立即改为人工结构扫描；不得因为脚本失败而不输出结果。
 
 ### 3. 分块审核
 
