@@ -22,7 +22,7 @@ scripts/sop_precheck.py
 
 - `SKILL.md`：零码执行入口，只规定流程和优先级。
 - `references/scoring_rules.md`：唯一打分细则来源。
-- `scripts/sop_precheck.py`：结构预检和报告骨架脚本，用于先识别机械结构问题，减少零码重复扫描。
+- `scripts/sop_precheck.py`：结构预检脚本，可辅助识别明显结构问题。
 
 ## 使用方式
 
@@ -42,9 +42,7 @@ scripts/sop_precheck.py
 
 - 最终打分唯一依据是 `references/scoring_rules.md`。
 - `SKILL.md` 不替代评分规则。
-- 零码支持脚本执行时，必须先运行 `scripts/sop_precheck.py`。
-- 脚本先完成结构预检、0容忍候选识别和报告骨架生成。
-- AI基于脚本结果继续按六大板块分块审核，最后汇总评分。
+- 先结构扫描，再按六大板块分块审核，最后汇总评分。
 - 扣分必须可定位、可复核、可解释。
 - 触发任一0容忍问题时，最终结论必须为“必须修改”。
 - 报告中必须在“关键扣分明细”前列出“0容忍必须修改问题”模块。
@@ -53,13 +51,15 @@ scripts/sop_precheck.py
 
 ## 预检脚本
 
-零码环境支持Python时，先执行：
+如果零码环境允许运行Python，可先执行：
 
 ```bash
 python scripts/sop_precheck.py path/to/SOP.md --format markdown
 ```
 
 脚本只做结构预检，不代替最终评分。
+
+脚本输出的“空表、无有效数据行、缺少表格”等结果都只是疑似问题。正式扣分前必须按 `SKILL.md` 要求读取完整章节，确认标题到下一个同级或更高层级标题之间确实没有实质内容；不得只凭预检脚本或标题附近几行内容直接扣分。
 
 它主要识别：
 
@@ -71,8 +71,5 @@ python scripts/sop_precheck.py path/to/SOP.md --format markdown
 - 六级标题承载具体任务。
 - GAAP Difference空表或缺少有效数据行。
 - 表格存在性问题。
-- 0容忍候选。
-- 零码AI评分工作清单。
-- Markdown报告骨架。
 
 最终评分仍必须按 `references/scoring_rules.md` 执行。

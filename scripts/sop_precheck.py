@@ -218,13 +218,25 @@ def sentence_candidates(text: str) -> list[dict[str, object]]:
     return candidates[:100]
 
 
-def table_after_heading(lines: list[str], heading_line: int) -> bool:
-    window = lines[heading_line : min(len(lines), heading_line + 12)]
+def section_after_heading(lines: list[str], heading: Heading) -> list[str]:
+    """Return content under a heading until the next same-or-higher level heading."""
+    start = heading.line
+    end = len(lines)
+    for idx in range(start, len(lines)):
+        match = HEADING_RE.match(lines[idx])
+        if match and len(match.group(1)) <= heading.level:
+            end = idx
+            break
+    return lines[start:end]
+
+
+def table_after_heading(lines: list[str], heading: Heading) -> bool:
+    window = section_after_heading(lines, heading)
     return any(line.strip().startswith("|") and line.count("|") >= 2 for line in window)
 
 
-def table_lines_after_heading(lines: list[str], heading_line: int) -> list[str]:
-    window = lines[heading_line : min(len(lines), heading_line + 40)]
+def table_lines_after_heading(lines: list[str], heading: Heading) -> list[str]:
+    window = section_after_heading(lines, heading)
     table_lines = []
     started = False
     for line in window:
@@ -251,10 +263,10 @@ def is_filled(cell: str) -> bool:
     return not PLACEHOLDER_RE.fullmatch(cell.strip())
 
 
-def gaap_table_content_check(lines: list[str], heading_line: int) -> dict[str, object]:
-    table_lines = table_lines_after_heading(lines, heading_line)
+def gaap_table_content_check(lines: list[str], heading: Heading) -> dict[str, object]:
+    table_lines = table_lines_after_heading(lines, heading)
     if not table_lines:
-        return {"valid_data_rows": 0, "issue": "未发现Markdown表格"}
+        return {"valid_data_rows": 0, "issue": "疑似未发现Markdown表格，需复核完整章节"}
 
     rows = [split_table_row(line) for line in table_lines]
     header = next((row for row in rows if not is_separator_row(row)), [])
@@ -280,11 +292,11 @@ def gaap_table_content_check(lines: list[str], heading_line: int) -> dict[str, o
 
     issue = ""
     if missing_columns:
-        issue = "缺少核心列：" + "、".join(missing_columns)
+        issue = "疑似缺少核心列：" + "、".join(missing_columns)
     elif not data_rows:
-        issue = "只有表头和分隔行"
+        issue = "疑似只有表头和分隔行，需复核完整章节"
     elif valid_data_rows == 0:
-        issue = "无有效差异内容行"
+        issue = "疑似无有效差异内容行，需复核完整章节"
     return {
         "valid_data_rows": valid_data_rows,
         "data_rows": len(data_rows),
@@ -300,9 +312,9 @@ def table_checks(text: str, headings: list[Heading]) -> dict[str, object]:
         module_headings = [h for h in headings if h.title == module or h.title.endswith(module)]
         checks = []
         for h in module_headings:
-            item = {"line": h.line, "has_nearby_table": table_after_heading(lines, h.line)}
+            item = {"line": h.line, "has_nearby_table": table_after_heading(lines, h)}
             if module == "GAAP Difference":
-                item.update(gaap_table_content_check(lines, h.line))
+                item.update(gaap_table_content_check(lines, h))
             checks.append(item)
         result[module] = checks
     return result
@@ -391,65 +403,6 @@ def heading_level_issues(headings: list[Heading]) -> list[dict[str, object]]:
     return issues[:100]
 
 
-def zero_tolerance_candidates(report: dict[str, object]) -> list[dict[str, object]]:
-    candidates = []
-    for name in report["missing_required_modules"]:
-        candidates.append(
-            {
-                "type": "必备章节缺失",
-                "location": name,
-                "line": "-",
-                "evidence": f"未识别到必备章节：{name}",
-                "suggestion": f"补充 `{name}` 章节，并按评分细则要求完善内容。",
-            }
-        )
-    for item in report["hierarchy_inversion_candidates"]:
-        candidates.append(
-            {
-                "type": "编号层级倒挂候选",
-                "location": item["context"],
-                "line": f"{item['line']} / {item['child_line']}",
-                "evidence": f"{item['parent_excerpt']} -> {item['child_excerpt']}",
-                "suggestion": "调整为标准层级：①②③ 下挂 a. b. c.，不要在 a. b. c. 下继续挂 ①②③。",
-            }
-        )
-    for item in report["heading_level_issues"]:
-        candidates.append(
-            {
-                "type": "六级标题承载具体任务候选",
-                "location": item["context"],
-                "line": item["line"],
-                "evidence": item["heading"],
-                "suggestion": "将六级标题任务改为标准五级任务标题或正文列表项。",
-            }
-        )
-    return candidates
-
-
-def ai_worklist(report: dict[str, object]) -> list[str]:
-    work = []
-    if report["missing_required_modules"]:
-        work.append("优先核实必备章节缺失，缺少任一必备章节时最终结论必须为“必须修改”。")
-    if report["psp_missing_core_modules"]:
-        work.append("逐条核实 PSP 缺少基础操作指引的问题，并按基础操作指引板块扣分。")
-    if report["hierarchy_inversion_candidates"] or report["heading_level_issues"]:
-        work.append("逐条核实标题层级、编号层级倒挂、六级标题承载任务等结构问题。")
-    if report["comments_or_draft_marks"]:
-        work.append("逐条核实注释、TODO、FIXME、待补充、审核中等草稿标记，并定位到对应板块扣分。")
-    if report["long_sentence_candidates"]:
-        work.append("基于长句候选逐条判断是否确需拆分；需要扣分时必须给出具体位置和整改建议。")
-    gaap_checks = report["table_checks"].get("GAAP Difference", [])
-    if any(item.get("issue") for item in gaap_checks):
-        work.append("核实 GAAP Difference 表格问题；空表、模板表或无有效数据行时按细则处理。")
-    for module in ("Review Checklist", "常用网站"):
-        checks = report["table_checks"].get(module, [])
-        if not checks or any(not item.get("has_nearby_table") for item in checks):
-            work.append(f"核实 {module} 是否使用合规表格，并按对应板块规则扣分。")
-    if not work:
-        work.append("脚本未发现明显结构预警；仍需按评分细则完成六大板块人工审核和整改建议。")
-    return work
-
-
 def build_report(path: Path) -> dict[str, object]:
     text, encoding = read_text(path)
     headings = iter_headings(text)
@@ -470,7 +423,7 @@ def build_report(path: Path) -> dict[str, object]:
         if any(name not in p.modules for name in ("基础操作指引",))
     ]
     title = next((h.title for h in headings if h.level == 1), "")
-    report = {
+    return {
         "file": str(path),
         "encoding": encoding,
         "title": title,
@@ -488,100 +441,6 @@ def build_report(path: Path) -> dict[str, object]:
         "heading_level_issues": heading_level_issues(headings),
         "table_checks": table_checks(text, headings),
     }
-    report["zero_tolerance_candidates"] = zero_tolerance_candidates(report)
-    report["ai_worklist"] = ai_worklist(report)
-    return report
-
-
-def print_zero_tolerance_candidates(report: dict[str, object]) -> None:
-    print("## 0容忍候选")
-    print()
-    candidates = report["zero_tolerance_candidates"]
-    if not candidates:
-        print("未发现脚本可识别的0容忍候选。AI仍需按评分细则复核。")
-    else:
-        print("| 序号 | 类型 | 行号 | 位置 | 证据 | 整改要求 |")
-        print("|------|------|------|------|------|----------|")
-        for idx, item in enumerate(candidates, 1):
-            location = str(item["location"]).replace("|", "\\|")
-            evidence = str(item["evidence"]).replace("|", "\\|")
-            suggestion = str(item["suggestion"]).replace("|", "\\|")
-            print(
-                f"| {idx} | {item['type']} | {item['line']} | "
-                f"{location} | {evidence} | {suggestion} |"
-            )
-    print()
-
-
-def print_ai_worklist(report: dict[str, object]) -> None:
-    print("## 零码AI评分工作清单")
-    print()
-    print("以下清单用于减少重复扫描；最终扣分和结论仍必须按 `references/scoring_rules.md` 判断。")
-    print()
-    for idx, item in enumerate(report["ai_worklist"], 1):
-        print(f"{idx}. {item}")
-    print()
-
-
-def print_report_skeleton(report: dict[str, object]) -> None:
-    title = report["title"] or Path(str(report["file"])).stem
-    print("## Markdown报告骨架")
-    print()
-    print("```markdown")
-    print("# 审计底稿SOP质量审核报告")
-    print()
-    print("## 一、基本信息")
-    print(f"- SOP名称：{title}")
-    print("- 审核日期：")
-    print("- 最终得分：")
-    print("- 审核结论：")
-    print("- 主要问题类型：")
-    print("- 审核方式：脚本结构预检 + AI分块审核 + 汇总评分")
-    print()
-    print("## 二、各板块得分概览")
-    print()
-    print("| 板块 | 满分 | 扣分 | 实得分 |")
-    print("|------|------|------|--------|")
-    for module, score in (
-        ("基础操作指引", 40),
-        ("进阶实操提示", 20),
-        ("易错点", 20),
-        ("GAAP Difference", 5),
-        ("Review Checklist", 12),
-        ("常用网站", 3),
-    ):
-        print(f"| {module} | {score} |  |  |")
-    print("| **合计** | **100** |  |  |")
-    print()
-    print("## 三、0容忍必须修改问题")
-    print()
-    if report["zero_tolerance_candidates"]:
-        print("| 序号 | 0容忍类型 | 具体位置 | 原文摘录 | 触发原因 | 整改要求 |")
-        print("|------|-----------|----------|----------|----------|----------|")
-        for idx, item in enumerate(report["zero_tolerance_candidates"], 1):
-            location = str(item["location"]).replace("|", "\\|")
-            evidence = str(item["evidence"]).replace("|", "\\|")
-            suggestion = str(item["suggestion"]).replace("|", "\\|")
-            print(f"| {idx} | {item['type']} | {location} | {evidence} | 脚本预检候选，需AI按细则确认 | {suggestion} |")
-    else:
-        print("未发现0容忍必须修改问题。")
-    print()
-    print("## 四、关键扣分明细")
-    print()
-    print("| 序号 | 板块 | 问题类型 | 具体位置 | 原文摘录 | 扣分原因 | 扣分 | 整改建议 |")
-    print("|------|------|----------|----------|----------|----------|------|----------|")
-    print()
-    print("## 五、RC覆盖检查摘要")
-    print()
-    print("| Review Checklist条目 | 易错点是否覆盖 | 证据位置 | 扣分 |")
-    print("|----------------------|----------------|----------|------|")
-    print()
-    print("## 六、优先整改建议")
-    print()
-    print("| 优先级 | 位置 | 问题 | 建议改法 |")
-    print("|--------|------|------|----------|")
-    print("```")
-    print()
 
 
 def print_markdown(report: dict[str, object]) -> None:
@@ -595,8 +454,6 @@ def print_markdown(report: dict[str, object]) -> None:
     print(f"- 标题数：{report['heading_count']}")
     print(f"- PSP数：{report['psp_count']}")
     print()
-    print_ai_worklist(report)
-    print_zero_tolerance_candidates(report)
     print("## 必备模块")
     print()
     print("| 模块 | 出现行号 |")
@@ -675,7 +532,7 @@ def print_markdown(report: dict[str, object]) -> None:
     print()
     print("## 表格检查")
     print()
-    print("| 模块 | 行号 | 附近是否有表格 | GAAP有效数据行 | GAAP问题 |")
+    print("| 模块 | 行号 | 章节内是否有表格 | GAAP有效数据行 | GAAP疑似问题 |")
     print("|------|------|----------------|----------------|----------|")
     for module, checks in report["table_checks"].items():
         if not checks:
@@ -688,8 +545,6 @@ def print_markdown(report: dict[str, object]) -> None:
                 f"| {module} | {item['line']} | "
                 f"{'是' if item['has_nearby_table'] else '否'} | {valid_rows} | {issue} |"
             )
-    print()
-    print_report_skeleton(report)
 
 
 def main() -> int:

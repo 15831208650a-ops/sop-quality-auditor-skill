@@ -14,7 +14,6 @@ description: 零码平台专用的审计底稿SOP质量审核Skill；按referenc
 - 不得使用模型常识、自行补充规则或旧版规则覆盖 `references/scoring_rules.md`。
 - 如果本文件与 `references/scoring_rules.md` 不一致，以 `references/scoring_rules.md` 为准。
 - 打分前必须读取 `references/scoring_rules.md`，不得只看本文件摘要。
-- 零码支持脚本执行时，必须先运行 `scripts/sop_precheck.py`，再进行AI分块审核和报告生成。
 
 ## 执行流程
 
@@ -41,15 +40,7 @@ references/scoring_rules.md
 
 ### 2. 结构扫描
 
-在输出最终得分前，必须先完成结构扫描。零码环境支持脚本时，结构扫描必须先由脚本完成：
-
-```bash
-python scripts/sop_precheck.py path/to/SOP.md --format markdown
-```
-
-脚本输出作为结构扫描依据，AI不得重复从零统计脚本已完成的机械检查；AI应直接基于脚本输出进入规则判断、扣分确认和整改建议。
-
-脚本主要识别：
+在输出最终得分前，必须先完成结构扫描，至少识别：
 
 - SOP标题。
 - 所有二级标题。
@@ -63,9 +54,23 @@ python scripts/sop_precheck.py path/to/SOP.md --format markdown
 - Review Checklist覆盖情况。
 - 需拆分长句候选。
 
-脚本只做结构预检、0容忍候选识别和报告骨架生成，不代替最终评分。最终得分必须基于 `references/scoring_rules.md` 分块审核后汇总。
+如果零码环境允许运行脚本，可先运行：
 
-如果脚本运行失败，必须在报告中说明失败原因，并立即改为人工结构扫描；不得因为脚本失败而不输出结果。
+```bash
+python scripts/sop_precheck.py path/to/SOP.md --format markdown
+```
+
+脚本只做结构预检，不代替最终评分。最终得分必须基于 `references/scoring_rules.md` 分块审核后汇总。
+
+### 2.1 空内容扣分复核
+
+对 GAAP Difference、Review Checklist、常用网站等独立章节扣“缺失、空表、无内容、只有占位内容”前，必须完成二次复核：
+
+- 必须定位该章节标题行，并读取到下一个同级或更高层级标题之前的完整章节内容。
+- 必须同时检查 Markdown 表格、普通段落、列表项和标题下的子标题内容，不得只看标题附近前几行。
+- 预检脚本关于表格或空内容的结果只能作为“疑似问题”，不得直接作为扣分结论。
+- 如果章节中已经存在实质性说明、数据行、检查项或差异描述，不得按“无内容/空表”扣分；只能按 `references/scoring_rules.md` 对内容质量、列头、覆盖充分性等具体问题扣分。
+- 如果平台没有读完整个 SOP 或只能看到文档片段，不得直接判定未读到的章节为空；应在报告中说明“需完整文档复核”，并基于已读取内容评分。
 
 ### 3. 分块审核
 
